@@ -39,6 +39,7 @@ def generate_quiz(categories: str):
     return response.choices[0].message.content.strip()
 
 def parse_quiz(quiz_text: str):
+    """Parse quiz text into structured dictionary with robust correct-answer mapping"""
     questions = quiz_text.split("\n\n")
     parsed = []
     for block in questions:
@@ -47,9 +48,16 @@ def parse_quiz(quiz_text: str):
             continue
         question = lines[0]
         options = lines[1:5]
-        correct = lines[5].replace("Correct Answer:", "").strip()
+        correct_raw = lines[5].replace("Correct Answer:", "").strip()
+        # Map correct answer to exact option text
+        correct_text = next((opt for opt in options if correct_raw.lower() in opt.lower()), options[0])
         context = lines[-1].replace("Context:", "").strip()
-        parsed.append({"question": question, "options": options, "correct": correct, "context": context})
+        parsed.append({
+            "question": question,
+            "options": options,
+            "correct": correct_text,
+            "context": context
+        })
     return parsed
 
 def save_quiz_file(quiz_text):
