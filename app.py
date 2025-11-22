@@ -2,6 +2,8 @@ import streamlit as st
 from openai import OpenAI
 import os
 from datetime import datetime
+import pandas as pd
+import json
 
 # -------------------------------
 # OpenAI Client
@@ -9,9 +11,10 @@ from datetime import datetime
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # -------------------------------
-# Function: Generate Questions
+# Helper Functions
 # -------------------------------
-def generate_question(categories: str) -> str:
+def generate_quiz(categories: str):
+    """Generates 10 MCQs based on teacher categories using OpenAI."""
     messages = [
         {"role": "system", "content": "You are a cybersecurity professional and instructor with 25+ years experience."},
         {"role": "user", "content": 
@@ -22,10 +25,7 @@ def generate_question(categories: str) -> str:
             - 4 multiple-choice options
             - Correct Answer
             - Short contextual explanation
-
-            Respond ONLY with the quiz.
-            Base the questions on the following categories:
-
+            Base the questions on these categories:
             {categories}
             """
         }
@@ -37,75 +37,12 @@ def generate_question(categories: str) -> str:
         max_tokens=1500,
         temperature=0.4
     )
-
     return response.choices[0].message.content.strip()
 
-# -------------------------------
-# Streamlit UI
-# -------------------------------
-st.title("🔐 Cybersecurity Assessment Generator (OpenAI API)")
-
-# -------------------------------
-# Student Name
-# -------------------------------
-if "student_name" not in st.session_state:
-    st.session_state["student_name"] = ""
-
-st.session_state["student_name"] = st.text_input(
-    "Enter your name:",
-    st.session_state["student_name"]
-)
-
-student_name = st.session_state["student_name"].strip().replace(" ", "_") or "Unknown"
-
-st.write(f"Hello, {st.session_state['student_name']}")
-
-# Load categories from file OR user input
-default_categories = ""
-if os.path.exists("trainingcontent.txt"):
-    with open("trainingcontent.txt", "r") as file:
-        default_categories = ", ".join([line.strip() for line in file.readlines()])
-
-categories_input = st.text_area("📌 Training Categories:", default_categories)
-
-# -------------------------------
-# Generate Quiz
-# -------------------------------
-if st.button("Generate Assessment"):
-    if not categories_input.strip():
-        st.error("Please provide categories.")
-    else:
-        with st.spinner("Generating questions using OpenAI..."):
-            try:
-                quiz_text = generate_question(categories_input)
-            except Exception as e:
-                st.error(f"Error generating quiz: {e}")
-                quiz_text = ""
-        
-        if quiz_text:
-            st.success("Quiz Generated Successfully!")
-            
-            # Save quiz
-            timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-            quiz_filename = f"Generated_Quiz_{timestamp}.txt"
-            with open(quiz_filename, "w") as f:
-                f.write(quiz_text)
-            st.info(f"Quiz saved as **{quiz_filename}**")
-
-            st.session_state["quiz"] = quiz_text
-
-# -------------------------------
-# QUIZ PARSING + INTERACTIVE QUIZ
-# -------------------------------
-if "quiz" in st.session_state:
-    st.header("📝 Take the Assessment")
-
-    quiz_raw = st.session_state["quiz"]
-
-    # Parse quiz text
-    questions = quiz_raw.split("\n\n")
-    parsed_questions = []
-
+def parse_quiz(quiz_text: str):
+    """Parse quiz text into structured dictionary"""
+    questions = quiz_text.split("\n\n")
+    parsed = []
     for block in questions:
         lines = block.strip().split("\n")
         if len(lines) < 6:
@@ -114,44 +51,100 @@ if "quiz" in st.session_state:
         options = lines[1:5]
         correct = lines[5].replace("Correct Answer:", "").strip()
         context = lines[-1].replace("Context:", "").strip()
+        parsed.append({"question": question, "options": options, "correct": correct, "context": context})
+    return parsed
 
-        parsed_questions.append({
-            "question": question,
-            "options": options,
-            "correct": correct,
-            "context": context
-        })
+def save_quiz(quiz_text):
+    timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    filename = f"quiz_{timestamp}.txt"
+    with open(filename, "w") as f:
+        f.write(quiz_text)
+    return filename
 
-    user_answers = []
-
+def save_results(student_name, score, parsed_questions, user_answers):
+    timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    results_filename = f"results_{student_name}_{timestamp}.json"
+    results = []
     for i, q in enumerate(parsed_questions):
-        st.subheader(f"Q{i+1}: {q['question']}")
-        answer = st.radio("Choose your answer:", q["options"], key=f"q{i}")
-        user_answers.append(answer)
+        results.append({
+            "question": q["question"],
+            "student_answer": user_answers[i],
+            "correct_answer": q["correct"],
+            "context": q["context"]
+        })
+    with open(results_filename, "w") as f:
+        json.dump({"student_name": student_name, "score": score, "answers": results}, f, indent=4)
+    return results_filename
 
-    if st.button("Submit Answers"):
-        score = 0
-        feedback = ""
+def load_all_results():
+    """Load all JSON results in current directory"""
+    import glob
+    all_results = []
+    for file in glob.glob("results_*.json"):
+        with open(file, "r") as f:
+            all_results.append(json.load(f))
+    return all_results
 
+# -------------------------------
+# App UI
+# -------------------------------
+st.title("🔐 Cybersecurity Quiz Platform")
+
+mode = st.sidebar.selectbox("Select Mode:", ["Teacher", "Student"])
+
+# -------------------------------
+# Teacher Mode
+# -------------------------------
+if mode == "Teacher":
+    st.header("📌 Teacher Dashboard - Generate Quiz")
+    categories_input = st.text_area("Enter Training Categories / Topics:", "Introduction to Cybersecurity")
+    
+    if st.button("Generate Quiz"):
+        if not categories_input.strip():
+            st.error("Please enter at least one category.")
+        else:
+            with st.spinner("Generating quiz via OpenAI..."):
+                try:
+                    quiz_text = generate_quiz(categories_input)
+                    st.success("✅ Quiz generated successfully!")
+                    filename = save_quiz(quiz_text)
+                    st.info(f"Quiz saved as **{filename}**")
+                    st.session_state["quiz_text"] = quiz_text
+                except Exception as e:
+                    st.error(f"Error generating quiz: {e}")
+    
+    st.subheader("View All Student Results")
+    all_results = load_all_results()
+    if all_results:
+        df_results = pd.DataFrame([{"Student": r["student_name"], "Score": r["score"]} for r in all_results])
+        st.table(df_results)
+    else:
+        st.info("No student results found yet.")
+
+# -------------------------------
+# Student Mode
+# -------------------------------
+elif mode == "Student":
+    st.header("📝 Take Quiz")
+    
+    student_name = st.text_input("Enter your name:").strip().replace(" ", "_") or "Unknown"
+
+    # Check if quiz already generated by teacher
+    if "quiz_text" not in st.session_state:
+        st.warning("Quiz not generated yet. Please contact your teacher.")
+    else:
+        parsed_questions = parse_quiz(st.session_state["quiz_text"])
+        user_answers = []
         for i, q in enumerate(parsed_questions):
-            user_ans = user_answers[i]
-            if user_ans.strip() == q["correct"].strip():
-                score += 1
-
-            feedback += f"""
-Q{i+1}: {q['question']}
-Your Answer: {user_ans}
-Correct Answer: {q['correct']}
-Context: {q['context']}
----------------------------------------------------
-"""
-
-        st.success(f"🎉 {st.session_state['student_name']}, you scored {score} / {len(parsed_questions)}")
-        st.text(feedback)
-
-        # Save results
-        timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-        results_filename = f"Quiz_Result_{student_name}_{timestamp}.txt"
-        with open(results_filename, "w") as f:
-            f.write(feedback)
-        st.info(f"Results saved as **{results_filename}**")
+            st.subheader(f"Q{i+1}: {q['question']}")
+            answer = st.radio("Choose your answer:", q["options"], key=f"q{i}")
+            user_answers.append(answer)
+        
+        if st.button("Submit Answers"):
+            score = 0
+            for i, q in enumerate(parsed_questions):
+                if user_answers[i].strip() == q["correct"].strip():
+                    score += 1
+            st.success(f"🎉 {student_name}, you scored {score} / {len(parsed_questions)}")
+            results_file = save_results(student_name, score, parsed_questions, user_answers)
+            st.info(f"Results saved as **{results_file}**")
