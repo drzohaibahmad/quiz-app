@@ -4,6 +4,7 @@ import os
 from datetime import datetime
 import json
 import pandas as pd
+import glob
 
 # -------------------------------
 # OpenAI Client
@@ -13,18 +14,31 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 # -------------------------------
 # Helper Functions
 # -------------------------------
+
 def generate_quiz(categories: str):
     messages = [
-        {"role": "system", "content": "You are a cybersecurity professional and instructor with 25+ years experience."},
+        {"role": "system", "content": "You are an expert cybersecurity instructor. Always return output ONLY in strict JSON."},
         {"role": "user", "content": 
             f"""
-            Create a cybersecurity awareness assessment test.
-            Provide EXACTLY 10 questions.
-            Each question must include:
-            - 4 multiple-choice options
-            - Correct Answer
-            - Short contextual explanation
-            Base the questions on these categories:
+            Create a cybersecurity quiz with EXACTLY 10 MCQs.
+
+            STRICT FORMAT:
+            Return ONLY JSON in this structure:
+
+            {{
+                "quiz": [
+                    {{
+                        "question": "...",
+                        "options": ["A. ...", "B. ...", "C. ...", "D. ..."],
+                        "correct": "A",
+                        "explanation": "..."
+                    }}
+                ]
+            }}
+
+            No extra text. No notes. No paragraphs.
+
+            Topics:
             {categories}
             """
         }
@@ -33,30 +47,20 @@ def generate_quiz(categories: str):
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=messages,
-        max_tokens=1500,
-        temperature=0.4
+        max_tokens=2000,
+        temperature=0.3
     )
     return response.choices[0].message.content.strip()
 
 def parse_quiz(quiz_text: str):
-    """Parse quiz text into structured dictionary with robust correct-answer mapping"""
-    questions = quiz_text.split("\n\n")
+    data = json.loads(quiz_text)
     parsed = []
-    for block in questions:
-        lines = block.strip().split("\n")
-        if len(lines) < 6:
-            continue
-        question = lines[0]
-        options = lines[1:5]
-        correct_raw = lines[5].replace("Correct Answer:", "").strip()
-        # Map correct answer to exact option text
-        correct_text = next((opt for opt in options if correct_raw.lower() in opt.lower()), options[0])
-        context = lines[-1].replace("Context:", "").strip()
+    for item in data["quiz"]:
         parsed.append({
-            "question": question,
-            "options": options,
-            "correct": correct_text,
-            "context": context
+            "question": item["question"],
+            "options": item["options"],
+            "correct": item["correct"],     # "A" / "B" / "C" / "D"
+            "explanation": item["explanation"]
         })
     return parsed
 
@@ -80,7 +84,7 @@ def save_student_results(student_name, score, parsed_questions, user_answers):
             "question": q["question"],
             "student_answer": user_answers[i],
             "correct_answer": q["correct"],
-            "context": q["context"]
+            "explanation": q["explanation"]
         })
     filename = f"results_{student_name}_{timestamp}.json"
     with open(filename, "w") as f:
@@ -88,7 +92,6 @@ def save_student_results(student_name, score, parsed_questions, user_answers):
     return filename
 
 def load_all_results():
-    import glob
     all_results = []
     for file in glob.glob("results_*.json"):
         with open(file, "r") as f:
@@ -96,7 +99,7 @@ def load_all_results():
     return all_results
 
 # -------------------------------
-# App UI
+# Streamlit App UI
 # -------------------------------
 st.title("🔐 Cybersecurity Quiz Platform")
 mode = st.sidebar.selectbox("Select Mode:", ["Teacher", "Student"])
@@ -154,7 +157,8 @@ elif mode == "Student":
         if st.button("Submit Answers"):
             score = 0
             for i, q in enumerate(parsed_questions):
-                if user_answers[i].strip() == q["correct"].strip():
+                selected_letter = user_answers[i][0]  # extract "A/B/C/D"
+                if selected_letter == q["correct"]:
                     score += 1
             st.success(f"🎉 {student_name}, you scored {score} / {len(parsed_questions)}")
             filename = save_student_results(student_name, score, parsed_questions, user_answers)
